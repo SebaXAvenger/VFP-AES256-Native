@@ -44,48 +44,67 @@ Until now, the only serious encryption options for VFP were:
 
 ## Usage
 
-```foxpro
-* Encrypt
-lcEncrypted = Cifrado_AES("myPassword", "sensitive data", .F.)
+    * Encrypt
+    lcEncrypted = Cifrado_AES("myPassword", "sensitive data", .F.)
 
-* Decrypt
-lcOriginal = Cifrado_AES("myPassword", lcEncrypted, .T.)
+    * Decrypt
+    lcOriginal = Cifrado_AES("myPassword", lcEncrypted, .T.)
 
-Parameters
-Parameter	Type	Description
-tcPassword	String	Encryption password
-tcData	String	Data to encrypt or decrypt
-tlDecrypt	Boolean	.F. = encrypt, .T. = decrypt
-Return value
-Encrypt: Base64 string containing salt + IV + ciphertext + HMAC
-Decrypt: Original plaintext string, or empty string on failure
-How it works
-Password + Salt (16 bytes random)
-        │
-        ▼
-PBKDF2-SHA256 (100,000 iterations)
-        │
-        ├──► Encryption Key (32 bytes)
-        └──► MAC Key (32 bytes)
-                │
-Plaintext ──► AES-256-CBC (IV random) ──► Ciphertext
-                                               │
-                              HMAC-SHA256 ─────┘
-                                               │
-                    Base64(Salt + IV + Ciphertext + HMAC)
-Comparison
-Feature	This function	Chilkat	MarshallSoft	VFPEncryption FLL
-AES-256	✅	✅	✅	✅
-PBKDF2 100k iters	✅	✅	❌	❌
-HMAC integrity	✅	✅	❌	❌
-Encrypt-then-MAC	✅	❌	❌	❌
-No external DLL	✅	❌	❌	❌
-No ActiveX	✅	❌	✅	✅
-Free	✅	❌	❌	✅
-Pure VFP source	✅	❌	❌	❌
-License
-MIT License — free for personal and commercial use. See LICENSE.
+### Parameters
 
-Author
-Sebastián Cabrera (@SebaXAvenger)
+| Parameter | Type | Description |
+|---|---|---|
+| `tcPassword` | String | Encryption password |
+| `tcData` | String | Data to encrypt or decrypt |
+| `tlDecrypt` | Boolean | `.F.` = encrypt, `.T.` = decrypt |
+
+### Return value
+
+- **Encrypt:** Base64 string containing `salt + IV + ciphertext + HMAC`
+- **Decrypt:** Original plaintext string, or empty string on failure
+
+---
+
+## How it works
+
+    Password + Salt (16 bytes random)
+            |
+            v
+    PBKDF2-SHA256 (100,000 iterations)
+            |
+            +---> Encryption Key (32 bytes)
+            +---> MAC Key (32 bytes)
+                        |
+    Plaintext --> AES-256-CBC (IV random) --> Ciphertext
+                                                  |
+                                 HMAC-SHA256 ------+
+                                                  |
+                     Base64(Salt + IV + Ciphertext + HMAC)
+
+---
+
+## Comparison
+
+| Feature | This function | Chilkat | MarshallSoft | VFPEncryption FLL |
+|---|---|---|---|---|
+| AES-256 | YES | YES | YES | YES |
+| PBKDF2 100k iters | YES | YES | NO | NO |
+| HMAC integrity | YES | YES | NO | NO |
+| Encrypt-then-MAC | YES | NO | NO | NO |
+| No external DLL | YES | NO | NO | NO |
+| No ActiveX | YES | NO | YES | YES |
+| Free | YES | NO | NO | YES |
+| Pure VFP source | YES | NO | NO | NO |
+
+---
+
+## License
+
+MIT License — free for personal and commercial use. See [LICENSE](LICENSE).
+
+---
+
+## Author
+
+**Sebastián Cabrera** ([@SebaXAvenger](https://github.com/SebaXAvenger))
 Security review assistance: AI (Claude / Abacus.AI)
