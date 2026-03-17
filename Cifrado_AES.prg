@@ -1,76 +1,76 @@
 *==============================================================================
 * LICENCIA MIT
 *==============================================================================
-* Copyright (c) 2026 Sebasti·n Cabrera
+* Copyright (c) 2026 Sebasti√°n Cabrera
 *
 * Se concede permiso, de forma gratuita, a cualquier persona que obtenga una
-* copia de este software y los archivos de documentaciÛn asociados, para usar,
+* copia de este software y los archivos de documentaci√≥n asociados, para usar,
 * copiar, modificar, fusionar, publicar, distribuir, sublicenciar y/o vender
 * copias del software, sin restricciones, sujeto a las siguientes condiciones:
 *
-* El aviso de copyright anterior y este aviso de permiso se incluir·n en todas
+* El aviso de copyright anterior y este aviso de permiso se incluir√°n en todas
 * las copias o partes sustanciales del software.
 *
-* EL SOFTWARE SE PROPORCIONA "TAL CUAL", SIN GARANTÕA DE NING⁄N TIPO.
+* EL SOFTWARE SE PROPORCIONA "TAL CUAL", SIN GARANT√çA DE NING√öN TIPO.
 *==============================================================================
 
 *==============================================================================
-* FUNCI”N : Cifrado_AES
+* FUNCI√ìN : Cifrado_AES
 * ARCHIVO  : cifrado_aes.prg
-* VERSI”N  : 1.0.0
+* VERSI√ìN  : 1.0.0
 * FECHA    : 02/2026
 *==============================================================================
 *
-* DESCRIPCI”N
-*   Cifra o descifra una cadena de texto usando AES-256-CBC con autenticaciÛn
+* DESCRIPCI√ìN
+*   Cifra o descifra una cadena de texto usando AES-256-CBC con autenticaci√≥n
 *   HMAC-SHA256 (esquema Encrypt-then-MAC). Utiliza exclusivamente la API
-*   criptogr·fica nativa de Windows (CNG / bcrypt.dll), sin dependencias
+*   criptogr√°fica nativa de Windows (CNG / bcrypt.dll), sin dependencias
 *   externas ni ActiveX.
 *
 * REQUISITOS
 *   - Visual FoxPro 9.0 SP2 o superior
 *   - Windows Vista o superior  (bcrypt.dll disponible desde Windows Vista)
-*   - No requiere librerÌas externas ni componentes COM/ActiveX
+*   - No requiere librer√≠as externas ni componentes COM/ActiveX
 *
-* PAR¡METROS
-*   tcPassword  (C)  ContraseÒa en texto plano. No puede estar vacÌa.
-*                    La fortaleza del cifrado depende de esta contraseÒa.
+* PAR√ÅMETROS
+*   tcPassword  (C)  Contrase√±a en texto plano. No puede estar vac√≠a.
+*                    La fortaleza del cifrado depende de esta contrase√±a.
 *
 *   tcData      (C)  - Al CIFRAR   : texto plano (cualquier string VFP).
-*                    - Al DESCIFRAR: blob hexadecimal producido por esta funciÛn.
+*                    - Al DESCIFRAR: blob hexadecimal producido por esta funci√≥n.
 *
 *   tlDecrypt   (L)  .F. = cifrar  |  .T. = descifrar
 *
 * RETORNO    (C)
-*   - Al CIFRAR   : string hexadecimal (may˙sculas) listo para almacenar o
+*   - Al CIFRAR   : string hexadecimal (may√∫sculas) listo para almacenar o
 *                   transmitir. Formato interno del blob:
 *                     [Iters 4B][Salt 16B][IV 16B][HMAC 32B][CipherText NB]
 *                   Todo codificado en HEX ? longitud siempre par.
 *
 *   - Al DESCIFRAR: texto plano original.
 *
-*   - En caso de ERROR o HMAC inv·lido: retorna "" (cadena vacÌa).
-*                   NUNCA lanza una excepciÛn al llamador.
+*   - En caso de ERROR o HMAC inv√°lido: retorna "" (cadena vac√≠a).
+*                   NUNCA lanza una excepci√≥n al llamador.
 *
 * NOTAS DE SEGURIDAD
 *   - Clave de cifrado  (AES-256) y clave MAC (HMAC-SHA256) se derivan
 *     por separado mediante PBKDF2-SHA256 con 100.000 iteraciones.
 *   - Salt (16 bytes) e IV (16 bytes) son aleatorios por cada cifrado
 *     (BCryptGenRandom con flag BCRYPT_USE_SYSTEM_PREFERRED_RNG).
-*   - La verificaciÛn del HMAC se realiza en TIEMPO CONSTANTE para evitar
-*     ataques de temporizaciÛn (timing attacks).
+*   - La verificaci√≥n del HMAC se realiza en TIEMPO CONSTANTE para evitar
+*     ataques de temporizaci√≥n (timing attacks).
 *   - Las variables con material de clave son sobreescritas con ceros en
 *     el bloque FINALLY antes de liberarse.
 *
-* CR…DITOS
-*   Autor    : Sebasti·n Cabrera
-*   Basado en: DocumentaciÛn oficial de Windows CNG API (Microsoft Docs)
+* CR√âDITOS
+*   Autor    : Sebasti√°n Cabrera
+*   Basado en: Documentaci√≥n oficial de Windows CNG API (Microsoft Docs)
 *              https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/
-*   Asistencia de diseÒo y revisiÛn de seguridad: IA (Claude, Abacus.AI)
+*   Asistencia de dise√±o y revisi√≥n de seguridad: IA (Claude, Abacus.AI)
 *
 * EJEMPLO DE USO
 *   lcTexto     = "Hola Mundo - Dato secreto 123"
-*   lcPassword  = "MiContraseÒaSegura!2026"
+*   lcPassword  = "MiContrase√±aSegura!2026"
 *
 *   lcCifrado   = Cifrado_AES(lcPassword, lcTexto,   .F.)
 *   lcOriginal  = Cifrado_AES(lcPassword, lcCifrado, .T.)
@@ -82,17 +82,17 @@
 *==============================================================================
 FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
 
-  *-- TamaÒos fijos del protocolo
-  #DEFINE ITERS_SIZE   4    && Bytes para almacenar el n˙mero de iteraciones
+  *-- Tama√±os fijos del protocolo
+  #DEFINE ITERS_SIZE   4    && Bytes para almacenar el n√∫mero de iteraciones
   #DEFINE SALT_SIZE    16   && Bytes de Salt aleatorio
   #DEFINE IV_SIZE      16   && Bytes de IV aleatorio
   #DEFINE KEY_SIZE     32   && Bytes de clave AES-256
   #DEFINE HMAC_SIZE    32   && Bytes de HMAC-SHA256
   #DEFINE HEADER_SIZE  68   && Iters(4) + Salt(16) + IV(16) + HMAC(32)
-  #DEFINE MIN_BLOB     84   && HEADER_SIZE + mÌnimo 1 bloque AES (16 bytes)
+  #DEFINE MIN_BLOB     84   && HEADER_SIZE + m√≠nimo 1 bloque AES (16 bytes)
   #DEFINE KDF_SIZE     64   && PBKDF2 produce 64 bytes: 32 enc + 32 mac
 
-  *-- ConfiguraciÛn de seguridad
+  *-- Configuraci√≥n de seguridad
   #DEFINE DEFAULT_ITERS 100000
 
   *-- Constantes CNG
@@ -116,13 +116,13 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
   LOCAL lnOutSize, lcCipher, lnPlainSize, lcPlain
   LOCAL loEx, lcPropName, lcPropValue
 
-  *-- Inicializar variables CRÕTICAS antes del TRY
+  *-- Inicializar variables CR√çTICAS antes del TRY
   lcKeyEnc      = SPACE(0)
   lcKeyMac      = SPACE(0)
   lcKeyMaterial = SPACE(0)
   lcResult      = ""
 
-  *-- Validaciones b·sicas de entrada
+  *-- Validaciones b√°sicas de entrada
   IF VARTYPE(tcPassword) <> "C" OR EMPTY(tcPassword)
     RETURN ""
   ENDIF
@@ -130,7 +130,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
     RETURN ""
   ENDIF
 
-  *-- PreparaciÛn de los datos
+  *-- Preparaci√≥n de los datos
   IF tlDecrypt
     lcRawData = STRCONV(tcData, 16)
     IF EMPTY(lcRawData) OR LEN(lcRawData) < MIN_BLOB
@@ -142,7 +142,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
 
   TRY
     *=========================================================
-    * 1. DECLARACIONES DLL ñ Windows CNG (bcrypt.dll)
+    * 1. DECLARACIONES DLL ‚Äì Windows CNG (bcrypt.dll)
     *=========================================================
     DECLARE INTEGER BCryptOpenAlgorithmProvider IN bcrypt.dll ;
       INTEGER @ phAlgorithm, STRING pszAlgId, ;
@@ -160,7 +160,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       INTEGER cbBuffer, INTEGER dwFlags
 
     *-- cIterationsLo y cIterationsHi DEBEN ser INTEGER.
-    *-- Si se pasan como STRING, VFP envÌa punteros a memoria (corrompiendo la llamada).
+    *-- Si se pasan como STRING, VFP env√≠a punteros a memoria (corrompiendo la llamada).
     DECLARE INTEGER BCryptDeriveKeyPBKDF2 IN bcrypt.dll ;
       INTEGER hPrf, STRING pbPassword, INTEGER cbPassword, ;
       STRING pbSalt, INTEGER cbSalt, ;
@@ -222,23 +222,23 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
     *-- CNG requiere UTF-16 obligatoriamente para cadenas LPCWSTR
     lnStatus = BCryptOpenAlgorithmProvider(@lhAesAlg, STRCONV("AES" + CHR(0), 5), 0, 0)
     IF lnStatus <> STATUS_SUCCESS
-      ERROR "BCryptOpenAlgorithmProvider(AES) fallÛ."
+      ERROR "BCryptOpenAlgorithmProvider(AES) fall√≥."
     ENDIF
 
     lcPropName  = STRCONV("ChainingMode" + CHR(0), 5)
     lcPropValue = STRCONV("ChainingModeCBC" + CHR(0), 5)
     lnStatus = BCryptSetProperty(lhAesAlg, lcPropName, lcPropValue, LEN(lcPropValue), 0)
     IF lnStatus <> STATUS_SUCCESS
-      ERROR "BCryptSetProperty(ChainingModeCBC) fallÛ."
+      ERROR "BCryptSetProperty(ChainingModeCBC) fall√≥."
     ENDIF
 
     lnStatus = BCryptOpenAlgorithmProvider(@lhHmacAlg, STRCONV("SHA256" + CHR(0), 5), 0, BCRYPT_HMAC_FLAG)
     IF lnStatus <> STATUS_SUCCESS
-      ERROR "BCryptOpenAlgorithmProvider(SHA256) fallÛ."
+      ERROR "BCryptOpenAlgorithmProvider(SHA256) fall√≥."
     ENDIF
 
     *=========================================================
-    * 3. EXTRACCI”N/GENERACI”N DE HEADER
+    * 3. EXTRACCI√ìN/GENERACI√ìN DE HEADER
     *=========================================================
     IF tlDecrypt
       lcIterLo     = SUBSTR(lcRawData, 1,  ITERS_SIZE)
@@ -268,7 +268,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       @lcKeyMaterial, KDF_SIZE, 0)
 
     IF lnStatus <> STATUS_SUCCESS
-      ERROR "BCryptDeriveKeyPBKDF2 fallÛ."
+      ERROR "BCryptDeriveKeyPBKDF2 fall√≥."
     ENDIF
 
     lcKeyEnc = SUBSTR(lcKeyMaterial, 1,            KEY_SIZE)
@@ -288,7 +288,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
     lnStatus = BCryptImportKey(lhAesAlg, 0, STRCONV("KeyDataBlob" + CHR(0), 5), @lhAesKey, ;
                                0, 0, lcKeyBlob, LEN(lcKeyBlob), 0)
     IF lnStatus <> STATUS_SUCCESS
-      ERROR "BCryptImportKey fallÛ."
+      ERROR "BCryptImportKey fall√≥."
     ENDIF
 
     lcKeyEnc = REPLICATE(CHR(0), KEY_SIZE)
@@ -305,7 +305,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
                                       0, lcIV, IV_SIZE, ;
                                       0, 0, @lnOutSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
-        ERROR "BCryptEncryptGetSize fallÛ."
+        ERROR "BCryptEncryptGetSize fall√≥."
       ENDIF
 
       lcCipher = REPLICATE(CHR(0), lnOutSize)
@@ -313,7 +313,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
                                0, lcIV, IV_SIZE, ;
                                @lcCipher, lnOutSize, @lnOutSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
-        ERROR "BCryptEncrypt fallÛ."
+        ERROR "BCryptEncrypt fall√≥."
       ENDIF
 
       lcCipherText = LEFT(lcCipher, lnOutSize)
@@ -331,7 +331,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       BCryptDestroyHash(lhHmacHash)
       lhHmacHash = 0
 
-      *-- Ensamblar blob final y convertir a Hexadecimal (15 = May˙sculas)
+      *-- Ensamblar blob final y convertir a Hexadecimal (15 = May√∫sculas)
       lcResult = STRCONV(lcIterLo + lcSalt + lcIV + lcHmacCalc + lcCipherText, 15)
 
     ELSE
@@ -350,7 +350,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       BCryptDestroyHash(lhHmacHash)
       lhHmacHash = 0
 
-      *-- ComparaciÛn HMAC en tiempo constante (evita timing attacks)
+      *-- Comparaci√≥n HMAC en tiempo constante (evita timing attacks)
       lnDiff = 0
       FOR lnIdx = 1 TO HMAC_SIZE
         lnDiff = BITOR(lnDiff, BITXOR(ASC(SUBSTR(lcHmacCalc,   lnIdx, 1)), ;
@@ -358,7 +358,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       ENDFOR
 
       IF lnDiff <> 0
-        ERROR "HMAC inv·lido."
+        ERROR "HMAC inv√°lido."
       ENDIF
 
       lnPlainSize = 0
@@ -366,7 +366,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
                                       0, lcIV, IV_SIZE, ;
                                       0, 0, @lnPlainSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
-        ERROR "BCryptDecryptGetSize fallÛ."
+        ERROR "BCryptDecryptGetSize fall√≥."
       ENDIF
 
       lcPlain  = REPLICATE(CHR(0), lnPlainSize)
@@ -374,7 +374,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
                                0, lcIV, IV_SIZE, ;
                                @lcPlain, lnPlainSize, @lnPlainSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
-        ERROR "BCryptDecrypt fallÛ."
+        ERROR "BCryptDecrypt fall√≥."
       ENDIF
 
       lcResult = LEFT(lcPlain, lnPlainSize)
@@ -382,8 +382,8 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
 
   CATCH TO loEx
     lcResult = ""
-    *-- Descomenta si necesitas ver exactamente dÛnde falla:
-    * MESSAGEBOX("Causa: " + loEx.Message + CHR(13) + "LÌnea: " + TRANSFORM(loEx.Lineno), 16, "Error")
+    *-- Descomenta si necesitas ver exactamente d√≥nde falla:
+    * MESSAGEBOX("Causa: " + loEx.Message + CHR(13) + "L√≠nea: " + TRANSFORM(loEx.Lineno), 16, "Error")
 
   FINALLY
     IF lhHmacHash <> 0
@@ -409,8 +409,8 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
 ENDFUNC
 
 *==============================================================================
-* EJEMPLO MÕNIMO DE USO
-* PodÈs ejecutar este bloque directamente desde el Command Window de VFP:
+* EJEMPLO M√çNIMO DE USO
+* Pod√©s ejecutar este bloque directamente desde el Command Window de VFP:
 *   DO cifrado_aes.prg
 *==============================================================================
 PROCEDURE EjemploCifradoAES
@@ -418,7 +418,7 @@ PROCEDURE EjemploCifradoAES
   LOCAL lcTexto, lcPassword, lcCifrado, lcDescifrado
 
   lcTexto    = "Hola Mundo - Dato secreto 123!@#"
-  lcPassword = "MiContraseÒaSegura!2026"
+  lcPassword = "MiContrase√±aSegura!2026"
 
   *-- Cifrar
   lcCifrado = Cifrado_AES(lcPassword, lcTexto, .F.)
@@ -433,7 +433,7 @@ PROCEDURE EjemploCifradoAES
   ? "Texto original  : " + lcTexto
   ? "Cifrado (HEX)   : " + LEFT(lcCifrado, 40) + "..."
   ? "Descifrado      : " + lcDescifrado
-  ? "VerificaciÛn    : " + IIF(lcTexto == lcDescifrado, "OK - Coincide", "ERROR - No coincide")
+  ? "Verificaci√≥n    : " + IIF(lcTexto == lcDescifrado, "OK - Coincide", "ERROR - No coincide")
   ? REPLICATE("-", 60)
 
 ENDPROC
