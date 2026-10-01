@@ -1,110 +1,83 @@
 # VFP-AES256-Native
 
-> Modern AES-256 encryption for Visual FoxPro — no DLLs, no ActiveX, no external dependencies.
-
----
-
-## Why this exists
-
-Until now, the only serious encryption options for VFP were:
-
-| Solution | Problem |
-|---|---|
-| [Chilkat ActiveX](https://www.chilkatsoft.com/) | Requires COM registration, external ActiveX |
-| [MarshallSoft AES4FP](https://www.marshallsoft.com/aes4fp.htm) | Costs $139, requires external DLL |
-| VFPEncryption FLL (2005) | No PBKDF2, no HMAC, outdated |
-
-**This function fills that gap.** Pure VFP code calling the native Windows CNG API (`bcrypt.dll`) directly — nothing external needed.
-
----
-
-## Security features
-
-| Feature | Detail |
-|---|---|
-| **Algorithm** | AES-256-CBC |
-| **IV** | Random 16 bytes per encryption (BCryptGenRandom) |
-| **Key derivation** | PBKDF2-SHA256, 100,000 iterations |
-| **Salt** | Random 16 bytes per encryption |
-| **Integrity** | Encrypt-then-MAC with HMAC-SHA256 |
-| **Keys** | Separate encryption and MAC keys derived independently |
-| **Timing attacks** | Constant-time HMAC comparison |
-| **Memory** | Sensitive key material wiped in FINALLY block |
-| **Dependencies** | bcrypt.dll only (built into Windows Vista+) |
-
----
+AES-256-CBC with encrypt-then-MAC authentication for **32-bit Visual FoxPro 9 SP2 / VFPA**. The PRG calls Windows CNG in the system `bcrypt.dll`; it does not implement AES itself or require a third-party DLL or ActiveX. This is not a certified cryptographic library.
 
 ## Requirements
 
-- Visual FoxPro 9.0 or later
-- Windows Vista or later (bcrypt.dll)
-- No external libraries, DLLs, or ActiveX components
-
----
+- VFP 9 SP2, or a compatible VFPA **x86** runtime. Native 64-bit VFPA is not supported by these INTEGER handle declarations.
+- Windows **7 or later** for BCryptDeriveKeyPBKDF2 and CNG-managed hash/key objects. This is an API minimum, not a recommendation to use an unsupported operating system.
+- No Python dependency for the application. Python is used only for the independent development reference.
 
 ## Usage
 
-    * Encrypt
-    lcEncrypted = Cifrado_AES("myPassword", "sensitive data", .F.)
+From the folder containing the PRG:
 
-    * Decrypt
-    lcOriginal = Cifrado_AES("myPassword", lcEncrypted, .T.)
+```foxpro
+SET PROCEDURE TO Cifrado_AES.prg ADDITIVE
+lcEncrypted = Cifrado_AES("myPassword", "sensitive data", .F.)
+IF NOT EMPTY(m.lcEncrypted)
+    lcOriginal = Cifrado_AES("myPassword", m.lcEncrypted, .T.)
+ENDIF
+```
 
-### Parameters
+The password and data must be character strings; mode must be logical. Invalid input, wrong password, invalid authentication or an API failure returns `""`. This preserves the original return contract; the caller must check it and must never overwrite a stored ciphertext after failed encryption. Empty or whitespace-only inputs remain rejected by the existing EMPTY policy. The function processes bytes: applications must define and preserve password/text encoding themselves.
 
-| Parameter | Type | Description |
-|---|---|---|
-| `tcPassword` | String | Encryption password |
-| `tcData` | String | Data to encrypt or decrypt |
-| `tlDecrypt` | Boolean | `.F.` = encrypt, `.T.` = decrypt |
+## Wire format
 
-### Return value
+The result is **hexadecimal**, not Base64. Both uppercase and lowercase hexadecimal inputs are accepted. Whitespace and non-hex characters are rejected.
 
-- **Encrypt:** Base64 string containing `salt + IV + ciphertext + HMAC`
-- **Decrypt:** Original plaintext string, or empty string on failure
+| Raw offset (zero-based) | Length | Content |
+|---|---:|---|
+| 0 | 4 | Iterations, little-endian |
+| 4 | 16 | Random salt |
+| 20 | 16 | Original random IV |
+| 36 | 32 | HMAC-SHA256 |
+| 68 | Multiple of 16 | AES-CBC ciphertext with block padding |
 
----
+PBKDF2-HMAC-SHA256 derives **one 64-byte output**, split into the first 32 bytes for AES and the next 32 for HMAC. These are distinct key bytes, not two independent PBKDF2 calls. HMAC authenticates `iterations || salt || IV || ciphertext`, excluding the tag itself; authentication is checked before decryption.
 
-## How it works
+New encryption retains **100,000 iterations** and the existing field layout. Decryption accepts 100,000 through 1,000,000 iterations and rejects other counts **before** key derivation. Plaintext is limited to **1 MiB**; raw messages to 1,048,660 bytes and hex input to 2,097,320 characters. These limits are deliberate resource bounds, not cipher limits. Older valid messages within those limits retain the same interpretation. Larger legacy data now fails closed: assess actual stored sizes before deployment. This change does not repair ciphertext already produced incorrectly or recover missing secrets. The format has no magic/version field; a future protocol change needs an explicit migration strategy.
 
-    Password + Salt (16 bytes random)
-            |
-            v
-    PBKDF2-SHA256 (100,000 iterations)
-            |
-            +---> Encryption Key (32 bytes)
-            +---> MAC Key (32 bytes)
-                        |
-    Plaintext --> AES-256-CBC (IV random) --> Ciphertext
-                                                  |
-                                 HMAC-SHA256 ------+
-                                                  |
-                     Base64(Salt + IV + Ciphertext + HMAC)
+## Hardening in 1.0.1
 
----
+- Check salt/IV RNG status and all HMAC creation/update/finalization results.
+- Reject malformed hex, truncated/non-block-aligned ciphertext, unsupported iteration counts and excessive sizes.
+- Place parsing in the error handler; validate mode type.
+- Use a fresh working IV for each size/encrypt/decrypt call; preserve the original IV for authentication and serialization.
+- Validate CNG output sizes against allocated capacity.
+- Check normal handle destruction; attempt cleanup without leaking cleanup exceptions.
+- Reduce remaining key/plaintext references including the imported-key blob.
 
-## Comparison
+The HMAC comparison scans all 32 bytes without an early mismatch return. This is **not a proven constant-time guarantee** for the VFP runtime. Assigning zero strings is **not guaranteed secure erasure** of heap storage or runtime copies; caller passwords and returned plaintext also remain under caller/runtime control.
 
-| Feature | This function | Chilkat | MarshallSoft | VFPEncryption FLL |
-|---|---|---|---|---|
-| AES-256 | YES | YES | YES | YES |
-| PBKDF2 100k iters | YES | YES | NO | NO |
-| HMAC integrity | YES | YES | NO | NO |
-| Encrypt-then-MAC | YES | NO | NO | NO |
-| No external DLL | YES | NO | NO | NO |
-| No ActiveX | YES | NO | YES | YES |
-| Free | YES | NO | NO | YES |
-| Pure VFP source | YES | NO | NO | NO |
+## Validation
 
----
+Performed in the development environment:
+- Static source/API review, including IV mutation and API platform requirements.
+- Independent Python AES-CBC/PBKDF2/HMAC reference round trip and six authenticated-field tampering cases.
 
-## License
+**Not performed:** VFP compilation, Windows CNG execution, DLL calling-convention validation in VFP/VFPA, failure injection, timing or memory-erasure verification. The independent reference does not prove that VFP marshals CNG calls correctly.
 
-MIT License — free for personal and commercial use. See [LICENSE](LICENSE).
+`tests/test_aes.prg` includes the independent deterministic decrypt vector, byte-level tampering, wrong passwords, invalid inputs, block boundaries, randomization and size bounds. From an isolated source folder in your target x86 VFP environment:
 
----
+```foxpro
+DO tests\test_aes.prg
+```
 
-## Author
+The test stops on a failure. Run it before replacing the function in production, and separately verify decrypting representative existing ciphertexts. RNG/HMAC failure injection and handle-leak testing remain manual/native-harness work.
 
-**Sebastián Cabrera** ([@SebaXAvenger](https://github.com/SebaXAvenger))
-Security review assistance: AI (Claude / Abacus.AI)
+## Recovery
+
+Keep the previous PRG and representative ciphertext samples. Roll back the source if target-runtime checks fail. Do not silently re-encrypt data during rollout; a source rollback does not undo stored-data changes. No operational data is modified by this PR.
+
+## References
+
+- [BCryptDeriveKeyPBKDF2](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptderivekeypbkdf2)
+- [BCryptGenRandom](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptgenrandom)
+- [BCryptEncrypt: mutable IV](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptencrypt)
+- [BCryptCreateHash: automatic object allocation](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptcreatehash)
+- [BCryptImportKey](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptimportkey)
+- [VFP STRCONV](https://www.vfphelp.com/help/_5wn12psg4.htm)
+- [VFP structured error handling](https://www.vfphelp.com/vfp9/html/220ead6b-fd59-49d7-94e3-6270a91e6807.htm)
+
+MIT License. Author: Sebastian Cabrera.

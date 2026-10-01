@@ -17,7 +17,7 @@
 *==============================================================================
 * FUNCIÓN : Cifrado_AES
 * ARCHIVO  : cifrado_aes.prg
-* VERSIÓN  : 1.0.0
+* VERSIÓN  : 1.0.1
 * FECHA    : 02/2026
 *==============================================================================
 *
@@ -29,7 +29,7 @@
 *
 * REQUISITOS
 *   - Visual FoxPro 9.0 SP2 o superior
-*   - Windows Vista o superior  (bcrypt.dll disponible desde Windows Vista)
+*   - Windows 7 o superior (PBKDF2 y gestion automatica de objetos CNG)
 *   - No requiere librerías externas ni componentes COM/ActiveX
 *
 * PARÁMETROS
@@ -54,13 +54,13 @@
 *
 * NOTAS DE SEGURIDAD
 *   - Clave de cifrado  (AES-256) y clave MAC (HMAC-SHA256) se derivan
-*     por separado mediante PBKDF2-SHA256 con 100.000 iteraciones.
+*     como dos mitades de una derivacion PBKDF2-SHA256 con 100.000 iteraciones.
 *   - Salt (16 bytes) e IV (16 bytes) son aleatorios por cada cifrado
 *     (BCryptGenRandom con flag BCRYPT_USE_SYSTEM_PREFERRED_RNG).
-*   - La verificación del HMAC se realiza en TIEMPO CONSTANTE para evitar
-*     ataques de temporización (timing attacks).
+*   - La comparacion recorre siempre 32 bytes, sin salida temprana; no certifica
+*     tiempo constante del runtime VFP.
 *   - Las variables con material de clave son sobreescritas con ceros en
-*     el bloque FINALLY antes de liberarse.
+*     el bloque FINALLY; esto NO garantiza borrar copias internas del runtime.
 *
 * CRÉDITOS
 *   Autor    : Sebastián Cabrera
@@ -94,6 +94,11 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
 
   *-- Configuración de seguridad
   #DEFINE DEFAULT_ITERS 100000
+  #DEFINE MIN_ITERS     100000
+  #DEFINE MAX_ITERS     1000000
+  #DEFINE MAX_PLAIN     1048576
+  #DEFINE MAX_RAW       1048660
+  #DEFINE MAX_HEX       2097320
 
   *-- Constantes CNG
   #DEFINE STATUS_SUCCESS        0
@@ -115,32 +120,49 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
   LOCAL lcIterLo, lnIters
   LOCAL lnOutSize, lcCipher, lnPlainSize, lcPlain
   LOCAL loEx, lcPropName, lcPropValue
+  LOCAL lcIVWork, lnCapacity, lnCleanupStatus
 
   *-- Inicializar variables CRÍTICAS antes del TRY
   lcKeyEnc      = SPACE(0)
   lcKeyMac      = SPACE(0)
   lcKeyMaterial = SPACE(0)
   lcResult      = ""
+  lcKeyBlob     = ""
+  lcPlain       = ""
+  lcRawData     = ""
 
+  TRY
+  *-- Validaciones y decodificacion quedan dentro del TRY.
+  IF VARTYPE(tlDecrypt) <> "L"
+    EXIT
+  ENDIF
   *-- Validaciones básicas de entrada
   IF VARTYPE(tcPassword) <> "C" OR EMPTY(tcPassword)
-    RETURN ""
+    EXIT
   ENDIF
   IF VARTYPE(tcData) <> "C" OR EMPTY(tcData)
-    RETURN ""
+    EXIT
   ENDIF
 
   *-- Preparación de los datos
   IF tlDecrypt
+    IF LEN(tcData) > MAX_HEX OR MOD(LEN(tcData), 2) <> 0
+      EXIT
+    ENDIF
+    IF LEN(CHRTRAN(UPPER(tcData), "0123456789ABCDEF", "")) <> 0
+      EXIT
+    ENDIF
     lcRawData = STRCONV(tcData, 16)
     IF EMPTY(lcRawData) OR LEN(lcRawData) < MIN_BLOB
-      RETURN ""
+      EXIT
     ENDIF
   ELSE
+    IF LEN(tcData) > MAX_PLAIN
+      EXIT
+    ENDIF
     lcRawData = tcData
   ENDIF
 
-  TRY
     *=========================================================
     * 1. DECLARACIONES DLL – Windows CNG (bcrypt.dll)
     *=========================================================
@@ -178,27 +200,27 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
 
     DECLARE INTEGER BCryptEncrypt IN bcrypt.dll ;
       INTEGER hKey, STRING pbInput, INTEGER cbInput, ;
-      INTEGER pPaddingInfo, STRING pbIV, INTEGER cbIV, ;
+      INTEGER pPaddingInfo, STRING @ pbIV, INTEGER cbIV, ;
       STRING @ pbOutput, INTEGER cbOutput, ;
       INTEGER @ pcbResult, INTEGER dwFlags
 
     DECLARE INTEGER BCryptEncrypt IN bcrypt.dll ;
       AS BCryptEncryptGetSize ;
       INTEGER hKey, STRING pbInput, INTEGER cbInput, ;
-      INTEGER pPaddingInfo, STRING pbIV, INTEGER cbIV, ;
+      INTEGER pPaddingInfo, STRING @ pbIV, INTEGER cbIV, ;
       INTEGER pbOutput, INTEGER cbOutput, ;
       INTEGER @ pcbResult, INTEGER dwFlags
 
     DECLARE INTEGER BCryptDecrypt IN bcrypt.dll ;
       INTEGER hKey, STRING pbInput, INTEGER cbInput, ;
-      INTEGER pPaddingInfo, STRING pbIV, INTEGER cbIV, ;
+      INTEGER pPaddingInfo, STRING @ pbIV, INTEGER cbIV, ;
       STRING @ pbOutput, INTEGER cbOutput, ;
       INTEGER @ pcbResult, INTEGER dwFlags
 
     DECLARE INTEGER BCryptDecrypt IN bcrypt.dll ;
       AS BCryptDecryptGetSize ;
       INTEGER hKey, STRING pbInput, INTEGER cbInput, ;
-      INTEGER pPaddingInfo, STRING pbIV, INTEGER cbIV, ;
+      INTEGER pPaddingInfo, STRING @ pbIV, INTEGER cbIV, ;
       INTEGER pbOutput, INTEGER cbOutput, ;
       INTEGER @ pcbResult, INTEGER dwFlags
 
@@ -247,11 +269,21 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       lcHmacStored = SUBSTR(lcRawData, 37, HMAC_SIZE)
       lcCipherText = SUBSTR(lcRawData, 69)
       lnIters      = CTOBIN(lcIterLo, "4RS")
+      IF lnIters < MIN_ITERS OR lnIters > MAX_ITERS OR ;
+         LEN(lcRawData) > MAX_RAW OR MOD(LEN(lcCipherText), IV_SIZE) <> 0
+        ERROR "Cabecera o longitud fuera de limites."
+      ENDIF
     ELSE
       lcSalt   = REPLICATE(CHR(0), SALT_SIZE)
       lcIV     = REPLICATE(CHR(0), IV_SIZE)
-      BCryptGenRandom(0, @lcSalt, SALT_SIZE, 2)
-      BCryptGenRandom(0, @lcIV,   IV_SIZE,   2)
+      lnStatus = BCryptGenRandom(0, @lcSalt, SALT_SIZE, 2)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "No se pudo generar Salt aleatorio."
+      ENDIF
+      lnStatus = BCryptGenRandom(0, @lcIV, IV_SIZE, 2)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "No se pudo generar IV aleatorio."
+      ENDIF
       lnIters  = DEFAULT_ITERS
       lcIterLo = BINTOC(lnIters, "4RS")
     ENDIF
@@ -301,34 +333,66 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       * CIFRAR
       *------------------------------------------------------
       lnOutSize = 0
+      lcIVWork = lcIV
       lnStatus = BCryptEncryptGetSize(lhAesKey, lcRawData, LEN(lcRawData), ;
-                                      0, lcIV, IV_SIZE, ;
+                                      0, @lcIVWork, IV_SIZE, ;
                                       0, 0, @lnOutSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
         ERROR "BCryptEncryptGetSize falló."
       ENDIF
 
-      lcCipher = REPLICATE(CHR(0), lnOutSize)
+      IF lnOutSize < IV_SIZE OR lnOutSize > MAX_PLAIN + IV_SIZE OR ;
+         MOD(lnOutSize, IV_SIZE) <> 0
+        ERROR "Tamano de cifrado invalido."
+      ENDIF
+      lnCapacity = lnOutSize
+      lcCipher = REPLICATE(CHR(0), lnCapacity)
+      lcIVWork = lcIV
       lnStatus = BCryptEncrypt(lhAesKey, lcRawData, LEN(lcRawData), ;
-                               0, lcIV, IV_SIZE, ;
-                               @lcCipher, lnOutSize, @lnOutSize, BCRYPT_BLOCK_PADDING)
+                               0, @lcIVWork, IV_SIZE, ;
+                               @lcCipher, lnCapacity, @lnOutSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
         ERROR "BCryptEncrypt falló."
       ENDIF
 
+      IF lnOutSize < IV_SIZE OR lnOutSize > lnCapacity OR ;
+         MOD(lnOutSize, IV_SIZE) <> 0
+        ERROR "Salida de cifrado invalida."
+      ENDIF
       lcCipherText = LEFT(lcCipher, lnOutSize)
 
       *-- HMAC sobre Iters + Salt + IV + CipherText
       lcHmacCalc = REPLICATE(CHR(0), HMAC_SIZE)
       lnStatus = BCryptCreateHash(lhHmacAlg, @lhHmacHash, 0, 0, lcKeyMac, KEY_SIZE, 0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptCreateHash fallo."
+      ENDIF
 
-      BCryptHashData(lhHmacHash, lcIterLo,     ITERS_SIZE,        0)
-      BCryptHashData(lhHmacHash, lcSalt,       SALT_SIZE,         0)
-      BCryptHashData(lhHmacHash, lcIV,         IV_SIZE,           0)
-      BCryptHashData(lhHmacHash, lcCipherText, LEN(lcCipherText), 0)
+      lnStatus = BCryptHashData(lhHmacHash, lcIterLo,     ITERS_SIZE,        0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
+      lnStatus = BCryptHashData(lhHmacHash, lcSalt,       SALT_SIZE,         0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
+      lnStatus = BCryptHashData(lhHmacHash, lcIV,         IV_SIZE,           0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
+      lnStatus = BCryptHashData(lhHmacHash, lcCipherText, LEN(lcCipherText), 0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
 
       lnStatus = BCryptFinishHash(lhHmacHash, @lcHmacCalc, HMAC_SIZE, 0)
-      BCryptDestroyHash(lhHmacHash)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptFinishHash fallo."
+      ENDIF
+      lnStatus = BCryptDestroyHash(lhHmacHash)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptDestroyHash fallo."
+      ENDIF
       lhHmacHash = 0
 
       *-- Ensamblar blob final y convertir a Hexadecimal (15 = Mayúsculas)
@@ -340,17 +404,38 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       *------------------------------------------------------
       lcHmacCalc = REPLICATE(CHR(0), HMAC_SIZE)
       lnStatus = BCryptCreateHash(lhHmacAlg, @lhHmacHash, 0, 0, lcKeyMac, KEY_SIZE, 0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptCreateHash fallo."
+      ENDIF
 
-      BCryptHashData(lhHmacHash, lcIterLo,     ITERS_SIZE,        0)
-      BCryptHashData(lhHmacHash, lcSalt,       SALT_SIZE,         0)
-      BCryptHashData(lhHmacHash, lcIV,         IV_SIZE,           0)
-      BCryptHashData(lhHmacHash, lcCipherText, LEN(lcCipherText), 0)
+      lnStatus = BCryptHashData(lhHmacHash, lcIterLo,     ITERS_SIZE,        0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
+      lnStatus = BCryptHashData(lhHmacHash, lcSalt,       SALT_SIZE,         0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
+      lnStatus = BCryptHashData(lhHmacHash, lcIV,         IV_SIZE,           0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
+      lnStatus = BCryptHashData(lhHmacHash, lcCipherText, LEN(lcCipherText), 0)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptHashData fallo."
+      ENDIF
 
       lnStatus = BCryptFinishHash(lhHmacHash, @lcHmacCalc, HMAC_SIZE, 0)
-      BCryptDestroyHash(lhHmacHash)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptFinishHash fallo."
+      ENDIF
+      lnStatus = BCryptDestroyHash(lhHmacHash)
+      IF lnStatus <> STATUS_SUCCESS
+        ERROR "BCryptDestroyHash fallo."
+      ENDIF
       lhHmacHash = 0
 
-      *-- Comparación HMAC en tiempo constante (evita timing attacks)
+      *-- Recorre 32 bytes sin salida temprana; runtime no certificado.
       lnDiff = 0
       FOR lnIdx = 1 TO HMAC_SIZE
         lnDiff = BITOR(lnDiff, BITXOR(ASC(SUBSTR(lcHmacCalc,   lnIdx, 1)), ;
@@ -362,21 +447,30 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       ENDIF
 
       lnPlainSize = 0
+      lcIVWork = lcIV
       lnStatus = BCryptDecryptGetSize(lhAesKey, lcCipherText, LEN(lcCipherText), ;
-                                      0, lcIV, IV_SIZE, ;
+                                      0, @lcIVWork, IV_SIZE, ;
                                       0, 0, @lnPlainSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
         ERROR "BCryptDecryptGetSize falló."
       ENDIF
 
-      lcPlain  = REPLICATE(CHR(0), lnPlainSize)
+      IF lnPlainSize < 0 OR lnPlainSize > MAX_PLAIN + IV_SIZE
+        ERROR "Tamano de descifrado invalido."
+      ENDIF
+      lnCapacity = lnPlainSize
+      lcPlain = REPLICATE(CHR(0), lnCapacity)
+      lcIVWork = lcIV
       lnStatus = BCryptDecrypt(lhAesKey, lcCipherText, LEN(lcCipherText), ;
-                               0, lcIV, IV_SIZE, ;
-                               @lcPlain, lnPlainSize, @lnPlainSize, BCRYPT_BLOCK_PADDING)
+                               0, @lcIVWork, IV_SIZE, ;
+                               @lcPlain, lnCapacity, @lnPlainSize, BCRYPT_BLOCK_PADDING)
       IF lnStatus <> STATUS_SUCCESS
         ERROR "BCryptDecrypt falló."
       ENDIF
 
+      IF lnPlainSize < 0 OR lnPlainSize > lnCapacity OR lnPlainSize > MAX_PLAIN
+        ERROR "Salida de descifrado invalida."
+      ENDIF
       lcResult = LEFT(lcPlain, lnPlainSize)
     ENDIF
 
@@ -386,19 +480,40 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
     * MESSAGEBOX("Causa: " + loEx.Message + CHR(13) + "Línea: " + TRANSFORM(loEx.Lineno), 16, "Error")
 
   FINALLY
+    TRY
     IF lhHmacHash <> 0
-      BCryptDestroyHash(lhHmacHash)
+      lnCleanupStatus = BCryptDestroyHash(lhHmacHash)
+      IF lnCleanupStatus <> STATUS_SUCCESS
+        lcResult = ""
+      ENDIF
     ENDIF
     IF lhAesKey <> 0
-      BCryptDestroyKey(lhAesKey)
+      lnCleanupStatus = BCryptDestroyKey(lhAesKey)
+      IF lnCleanupStatus <> STATUS_SUCCESS
+        lcResult = ""
+      ENDIF
     ENDIF
     IF lhAesAlg <> 0
-      BCryptCloseAlgorithmProvider(lhAesAlg, 0)
+      lnCleanupStatus = BCryptCloseAlgorithmProvider(lhAesAlg, 0)
+      IF lnCleanupStatus <> STATUS_SUCCESS
+        lcResult = ""
+      ENDIF
     ENDIF
     IF lhHmacAlg <> 0
-      BCryptCloseAlgorithmProvider(lhHmacAlg, 0)
+      lnCleanupStatus = BCryptCloseAlgorithmProvider(lhHmacAlg, 0)
+      IF lnCleanupStatus <> STATUS_SUCCESS
+        lcResult = ""
+      ENDIF
     ENDIF
 
+    CATCH
+      *-- Nunca convertir un fallo de limpieza en una excepcion al llamador.
+      lcResult = ""
+    ENDTRY
+    *-- Reducir exposicion; asignaciones NO garantizan borrado fisico.
+    lcKeyBlob = REPLICATE(CHR(0), LEN(lcKeyBlob))
+    lcPlain = REPLICATE(CHR(0), LEN(lcPlain))
+    lcRawData = REPLICATE(CHR(0), LEN(lcRawData))
     *-- Limpiar material de clave de memoria
     lcKeyEnc      = REPLICATE(CHR(0), KEY_SIZE)
     lcKeyMac      = REPLICATE(CHR(0), KEY_SIZE)
@@ -411,7 +526,8 @@ ENDFUNC
 *==============================================================================
 * EJEMPLO MÍNIMO DE USO
 * Podés ejecutar este bloque directamente desde el Command Window de VFP:
-*   DO cifrado_aes.prg
+*   SET PROCEDURE TO Cifrado_AES.prg ADDITIVE
+*   DO EjemploCifradoAES
 *==============================================================================
 PROCEDURE EjemploCifradoAES
 
