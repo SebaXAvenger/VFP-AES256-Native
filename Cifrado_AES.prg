@@ -435,7 +435,7 @@ FUNCTION Cifrado_AES(tcPassword, tcData, tlDecrypt)
       ENDIF
       lhHmacHash = 0
 
-      *-- Comparación HMAC en tiempo constante (evita timing attacks)
+      *-- Recorre 32 bytes sin salida temprana; runtime no certificado.
       lnDiff = 0
       FOR lnIdx = 1 TO HMAC_SIZE
         lnDiff = BITOR(lnDiff, BITXOR(ASC(SUBSTR(lcHmacCalc,   lnIdx, 1)), ;
